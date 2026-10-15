@@ -11,8 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 INDEX = ROOT / "index.html"
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
-OLLAMA_MODEL = "gemma2:2b"
-PORT = 8765
+OLLAMA_MODEL = "gemma3:1b"
+PORT = 8787
 
 SAMPLE = {
     "client": "Mehra Foods",
@@ -116,33 +116,100 @@ def rules_quote(payload):
     }
 
 
+def normalize_quote(quote, client):
+    deliverables = quote.get("deliverables")
+    if not isinstance(deliverables, list) or not deliverables:
+        raise ValueError("missing deliverables")
+    cleaned = []
+    for item in deliverables:
+        if not isinstance(item, dict):
+            raise ValueError("bad deliverable")
+        name = str(item.get("name") or "").strip()
+        detail = str(item.get("detail") or "").strip()
+        amount = int(round(float(item.get("amount_inr"))))
+        if not name or amount < 0:
+            raise ValueError("bad line")
+        cleaned.append({"name": name, "detail": detail, "amount_inr": amount})
+    assumptions = quote.get("assumptions")
+    if not isinstance(assumptions, list):
+        assumptions = []
+    total = quote.get("total_inr")
+    if total is None:
+        total = sum(item["amount_inr"] for item in cleaned)
+    return {
+        "client": str(quote.get("client") or client).strip() or client,
+        "summary": str(quote.get("summary") or f"Fixed quote for {client}.").strip(),
+        "deliverables": cleaned,
+        "assumptions": [str(item) for item in assumptions if str(item).strip()],
+        "timeline": str(quote.get("timeline") or "5 working days").strip(),
+        "total_inr": int(round(float(total))),
+        "payment_terms": str(quote.get("payment_terms") or "50% to start, 50% on delivery.").strip(),
+        "source": f"ollama:{OLLAMA_MODEL}",
+    }
+
+
 def ollama_quote(payload):
+    client = (payload.get("client") or "Client").strip()
     prompt = (
-        "Return only JSON for a freelance quote in INR. Keys: client, summary, "
-        "deliverables (list of {name, detail, amount_inr}), assumptions (list), "
-        "timeline, total_inr, payment_terms. Use the client's budget if they gave one.\n"
-        f"Client: {payload.get('client') or 'Client'}\n"
+        "Price freelance work in INR. Return JSON only. "
+        "deliverables is a list of objects with name, detail, and amount_inr as numbers. "
+        "The letter k after a number means thousands: 25k is 25000. "
+        "total_inr must equal the sum of amount_inr and must not exceed a stated budget. "
+        "Add one deliverable object for each thing the client asked for. "
+        "Write a new quote. Do not copy the example client or prices.\n"
+        "Shape example only: "
+        '{"client":"Example Studio","summary":"Fixed quote for a poster.",'
+        '"deliverables":[{"name":"Poster","detail":"One A3 poster","amount_inr":4000}],'
+        '"assumptions":["One revision is included."],"timeline":"3 working days",'
+        '"total_inr":4000,"payment_terms":"50% to start, 50% on delivery."}\n'
+        f"Client: {client}\n"
         f"Brief: {payload.get('brief') or ''}"
     )
+    schema = {
+        "type": "object",
+        "properties": {
+            "client": {"type": "string"},
+            "summary": {"type": "string"},
+            "deliverables": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "detail": {"type": "string"},
+                        "amount_inr": {"type": "integer"},
+                    },
+                    "required": ["name", "detail", "amount_inr"],
+                },
+            },
+            "assumptions": {"type": "array", "items": {"type": "string"}},
+            "timeline": {"type": "string"},
+            "total_inr": {"type": "integer"},
+            "payment_terms": {"type": "string"},
+        },
+        "required": ["client", "summary", "deliverables", "timeline", "total_inr", "payment_terms"],
+    }
     body = json.dumps(
-        {"model": OLLAMA_MODEL, "prompt": prompt, "stream": False, "format": "json"}
+        {"model": OLLAMA_MODEL, "prompt": prompt, "stream": False, "format": schema}
     ).encode()
     request = urllib.request.Request(
         OLLAMA_URL,
         data=body,
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(request, timeout=25) as response:
+    with urllib.request.urlopen(request, timeout=120) as response:
         raw = json.loads(response.read().decode())
-    quote = json.loads(raw["response"])
-    quote["source"] = f"ollama:{OLLAMA_MODEL}"
-    return quote
+    return normalize_quote(json.loads(raw["response"]), client)
 
 
 def make_quote(payload):
     try:
-        return ollama_quote(payload)
-    except (urllib.error.URLError, TimeoutError, KeyError, json.JSONDecodeError, OSError):
+        quote = ollama_quote(payload)
+        budget = extract_budget((payload.get("brief") or "").lower())
+        if budget is not None and quote["total_inr"] > budget:
+            raise ValueError("over budget")
+        return quote
+    except (urllib.error.URLError, TimeoutError, KeyError, json.JSONDecodeError, OSError, ValueError, TypeError):
         return rules_quote(payload)
 
 
