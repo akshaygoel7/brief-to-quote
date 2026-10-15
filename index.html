@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Brief to Quote</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1c1915;
+      --paper: #f4efe6;
+      --card: #fffaf3;
+      --line: #d9cbb8;
+      --accent: #9a3412;
+      --muted: #6b6258;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Georgia, "Iowan Old Style", serif;
+      background: var(--paper);
+      color: var(--ink);
+    }
+    main {
+      max-width: 880px;
+      margin: 0 auto;
+      padding: 32px 20px 64px;
+    }
+    h1 { font-size: 2.4rem; line-height: 1; margin: 0 0 8px; }
+    p.lede { margin: 0 0 24px; color: var(--muted); max-width: 42rem; }
+    form, article {
+      background: var(--card);
+      border: 1px solid var(--line);
+      padding: 20px;
+    }
+    label { display: block; font-size: 0.85rem; letter-spacing: 0.04em; text-transform: uppercase; margin-bottom: 6px; }
+    input, textarea {
+      width: 100%;
+      font: 1rem/1.4 ui-sans-serif, system-ui, sans-serif;
+      border: 1px solid var(--line);
+      background: white;
+      padding: 10px 12px;
+      margin-bottom: 14px;
+    }
+    textarea { min-height: 140px; resize: vertical; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; }
+    button {
+      font: 600 0.95rem/1 ui-sans-serif, system-ui, sans-serif;
+      border: 0;
+      background: var(--accent);
+      color: white;
+      padding: 12px 16px;
+      cursor: pointer;
+    }
+    button.secondary { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+    article { margin-top: 18px; display: none; }
+    article.show { display: block; }
+    table { width: 100%; border-collapse: collapse; font-family: ui-sans-serif, system-ui, sans-serif; }
+    td { padding: 8px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+    td.amt { text-align: right; white-space: nowrap; }
+    .total { font-size: 1.4rem; margin: 12px 0; }
+    ul { margin: 8px 0 0; padding-left: 18px; }
+    .meta { color: var(--muted); font-family: ui-sans-serif, system-ui, sans-serif; font-size: 0.85rem; }
+    .error { color: var(--accent); font-family: ui-sans-serif, system-ui, sans-serif; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Brief to Quote</h1>
+    <p class="lede">Paste a WhatsApp brief from a Delhi client. This desk turns it into a fixed quote in rupees. The brief stays on your laptop.</p>
+    <form id="desk">
+      <label for="client">Client</label>
+      <input id="client" name="client" value="Mehra Foods" />
+      <label for="brief">Client brief</label>
+      <textarea id="brief" name="brief"></textarea>
+      <div class="row">
+        <button type="submit">Make the quote</button>
+        <button type="button" class="secondary" id="sample">Load a sample brief</button>
+      </div>
+      <p class="error" id="error" hidden></p>
+    </form>
+    <article id="quote">
+      <p class="meta" id="source"></p>
+      <h2 id="who"></h2>
+      <p id="summary"></p>
+      <table id="lines"></table>
+      <p class="total" id="total"></p>
+      <p id="terms"></p>
+      <p id="when"></p>
+      <ul id="assumptions"></ul>
+    </article>
+  </main>
+  <script>
+    const money = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 });
+    const form = document.querySelector("#desk");
+    const error = document.querySelector("#error");
+    const quote = document.querySelector("#quote");
+
+    async function loadSample() {
+      const response = await fetch("/api/sample");
+      const sample = await response.json();
+      document.querySelector("#client").value = sample.client;
+      document.querySelector("#brief").value = sample.brief;
+    }
+
+    function show(data) {
+      document.querySelector("#who").textContent = data.client;
+      document.querySelector("#summary").textContent = data.summary;
+      document.querySelector("#source").textContent = data.source === "local-rules"
+        ? "Priced on this laptop. A local open model is used automatically when Ollama is running."
+        : "Priced by a local open-weight model. Nothing was sent to a cloud API.";
+      document.querySelector("#lines").innerHTML = data.deliverables.map((item) =>
+        `<tr><td><strong>${item.name}</strong><br>${item.detail}</td><td class="amt">${money.format(item.amount_inr)}</td></tr>`
+      ).join("");
+      document.querySelector("#total").textContent = money.format(data.total_inr);
+      document.querySelector("#terms").textContent = data.payment_terms;
+      document.querySelector("#when").textContent = `Timeline: ${data.timeline}.`;
+      document.querySelector("#assumptions").innerHTML = data.assumptions.map((item) => `<li>${item}</li>`).join("");
+      quote.classList.add("show");
+    }
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      error.hidden = true;
+      const response = await fetch("/api/quote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          client: document.querySelector("#client").value,
+          brief: document.querySelector("#brief").value,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        error.hidden = false;
+        error.textContent = data.error || "Could not make a quote.";
+        return;
+      }
+      show(data);
+    });
+
+    document.querySelector("#sample").addEventListener("click", loadSample);
+    loadSample();
+  </script>
+</body>
+</html>
